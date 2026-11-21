@@ -1,8 +1,10 @@
 """联机客户端：frpc 配置生成与局域网端口检测。"""
 
+import socket
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from engine import relay
 
@@ -79,6 +81,46 @@ class LanPortTest(unittest.TestCase):
         port = relay.pick_free_port()
         self.assertGreaterEqual(port, relay.DEFAULT_BIND_RANGE[0])
         self.assertLessEqual(port, relay.DEFAULT_BIND_RANGE[1])
+
+
+class FrpsAddressTest(unittest.TestCase):
+    def test_keeps_resolvable_address(self) -> None:
+        with mock.patch.object(socket, "getaddrinfo", return_value=[("ok",)]):
+            self.assertEqual(
+                relay.resolve_frps_addr(
+                    "frp.example.com", "https://bj.relay.aml.example"
+                ),
+                "frp.example.com",
+            )
+
+    def test_falls_back_to_node_host(self) -> None:
+        with mock.patch.object(
+            socket, "getaddrinfo", side_effect=socket.gaierror("no such host")
+        ):
+            self.assertEqual(
+                relay.resolve_frps_addr(
+                    "frp.amlauncher.run", "https://bj.relay.aml.cxsjmc.cn"
+                ),
+                "bj.relay.aml.cxsjmc.cn",
+            )
+
+    def test_empty_address_uses_node_host(self) -> None:
+        self.assertEqual(
+            relay.resolve_frps_addr("", "https://bj.relay.aml.cxsjmc.cn/"),
+            "bj.relay.aml.cxsjmc.cn",
+        )
+
+    def test_no_fallback_without_api_host(self) -> None:
+        with mock.patch.object(
+            socket, "getaddrinfo", side_effect=socket.gaierror("no such host")
+        ):
+            self.assertEqual(relay.resolve_frps_addr("frp.dead.run", ""), "frp.dead.run")
+
+
+class AnsiLogTest(unittest.TestCase):
+    def test_strip_ansi(self) -> None:
+        raw = "\x1b[1;34m2026-11-21 [I] login success\x1b[0m"
+        self.assertEqual(relay.strip_ansi(raw), "2026-11-21 [I] login success")
 
 
 if __name__ == "__main__":

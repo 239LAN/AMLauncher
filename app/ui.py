@@ -5457,16 +5457,6 @@ class LauncherUI:
             self.relay_create_mods_label = ui.label(
                 self._relay_create_mods_text()
             ).classes("aml-sub")
-            with ui.element("div").classes(
-                "aml-dropzone w-full items-center justify-center gap-1"
-            ).props("data-aml-drop=aml-relay-mods data-aml-click=1"):
-                ui.icon("upload_file").classes("text-[24px]")
-                ui.label("点击或拖入模组清单（.json / .txt）").classes("aml-sub")
-            ui.upload(
-                on_upload=self._relay_upload_mods,
-                auto_upload=True,
-                multiple=False,
-            ).props("id=aml-relay-mods accept=.json,.txt").classes("hidden")
             if self._relay_create_mods:
                 names = "、".join(
                     str(item.get("filename") or item.get("name") or "")
@@ -5481,7 +5471,8 @@ class LauncherUI:
                     "成员未安装或禁用这些 Mod 时可能无法正常进入，请提示成员自行安装或接受风险。"
                 ).classes("text-[12px]").style("color: #d97706")
             ui.label(
-                "未上传清单时，成员加入将跳过模组校验；上传后会自动比对并提示缺失项。"
+                "自动读取本机当前版本已启用的 Mod，不支持手动上传清单；"
+                "成员加入时会按这份清单提示缺失项。"
             ).classes("aml-sub")
 
     # ----------------------------------------------------------- ChmlFrp 表单
@@ -5698,72 +5689,9 @@ class LauncherUI:
         return text
 
     @_relay_ui_task
-    async def _relay_upload_mods(self, event) -> None:
-        try:
-            raw = await event.file.read()
-            text = raw.decode("utf-8-sig", errors="replace")
-            mods = self._relay_parse_mod_list(text, event.file.filename or "")
-        except Exception as exc:  # noqa: BLE001
-            ui.notify(f"读取模组清单失败：{exc}", type="negative")
-            return
-        if not mods:
-            ui.notify("清单中没有可识别的 Mod", type="warning")
-            return
-        self._relay_create_mods = mods
-        self._relay_create_mods_found = 0
-        self._relay_create_mods_missing = 0
-        if self.relay_create_mods_label is not None:
-            self.relay_create_mods_label.text = self._relay_create_mods_text()
-        ui.notify(f"已导入 {len(mods)} 个 Mod", type="positive")
-        self._render_relay_create_page()
-
-    @staticmethod
-    def _relay_parse_mod_list(text: str, filename: str) -> list[dict]:
-        text = str(text or "").strip()
-        if not text:
-            return []
-        if filename.lower().endswith(".json") or text.startswith("[") or text.startswith("{"):
-            import json
-
-            payload = json.loads(text)
-            if isinstance(payload, dict):
-                payload = payload.get("mods") or payload.get("files") or []
-            if not isinstance(payload, list):
-                return []
-            result = []
-            for item in payload[:300]:
-                if isinstance(item, str):
-                    result.append({"filename": item, "name": item, "enabled": True})
-                elif isinstance(item, dict):
-                    entry = {
-                        key: item.get(key)
-                        for key in (
-                            "filename",
-                            "name",
-                            "version",
-                            "sha1",
-                            "modrinth_url",
-                            "curseforge_url",
-                            "download_url",
-                        )
-                        if item.get(key)
-                    }
-                    entry.setdefault("enabled", bool(item.get("enabled", True)))
-                    if entry.get("filename") or entry.get("name"):
-                        result.append(entry)
-            return result
-        result = []
-        for line in text.splitlines():
-            name = line.strip()
-            if not name or name.startswith("#"):
-                continue
-            result.append({"filename": name, "name": name, "enabled": True})
-        return result[:300]
-
-    @_relay_ui_task
     async def _relay_resolve_create_mods(self) -> None:
         if not self._relay_create_mods:
-            ui.notify("请先读取或上传模组清单", type="warning")
+            ui.notify("当前版本没有检测到已启用的 Mod", type="warning")
             return
         if self.relay_create_mods_label is not None:
             self.relay_create_mods_label.text = "正在查询 Modrinth 链接…"
@@ -5826,7 +5754,7 @@ class LauncherUI:
         self, name: str, port: int, players: int, hidden: bool, mods: list[dict]
     ) -> None:
         version = self._relay_create_version or "unknown"
-        ui.notify("正在创建房间，首次使用会下载 frpc…")
+        ui.notify("正在创建房间…")
         try:
             room = await run.io_bound(
                 lambda: self.service.relay_create_room(

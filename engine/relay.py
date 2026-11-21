@@ -275,6 +275,34 @@ def frpc_config_text(frpc: dict, *, kind: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def strip_ansi(text: str) -> str:
+    """去掉 frpc 日志里的终端颜色控制符，避免错误提示里出现乱码。"""
+    return ANSI_ESCAPE.sub("", str(text or ""))
+
+
+def resolve_frps_addr(server_addr: str, api: str) -> str:
+    """frps 地址无法解析时，退回与节点 API 同机部署的域名。
+
+    服务端下发的 ``server_addr`` 可能是已失效的旧域名；节点 API 域名与 frps
+    在同一台机器上，退回它可以避免整条联机链路不可用。
+    """
+    import socket
+    import urllib.parse
+
+    addr = str(server_addr or "").strip()
+    if addr:
+        try:
+            socket.getaddrinfo(addr, None, proto=socket.IPPROTO_TCP)
+            return addr
+        except OSError:
+            pass
+    host = urllib.parse.urlsplit(str(api or "")).hostname or ""
+    return host or addr
+
+
 def detect_lan_port(log_path: Optional[Path], *, default: int = 25565) -> int:
     """从 latest.log 里找“对局域网开放”的端口。"""
     if not log_path:
@@ -565,7 +593,7 @@ class TunnelRunner:
         if not process or not process.stdout:
             return
         for line in process.stdout:
-            text = line.rstrip()
+            text = strip_ansi(line.rstrip())
             if not text:
                 continue
             tunnel.logs.append(text)

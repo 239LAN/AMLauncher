@@ -2730,6 +2730,18 @@ class LauncherService:
         session = self.relay_session(api)
         return relay_engine.RelayClient(api, token=str(session.get("session_token") or ""))
 
+    def _frpc_with_fallback(self, frpc: dict, api: str) -> dict:
+        """服务端下发的 frps 域名失效时，退回节点 API 同机域名。"""
+        config = dict(frpc or {})
+        original = str(config.get("server_addr") or "")
+        resolved = relay_engine.resolve_frps_addr(original, api)
+        if resolved and resolved != original:
+            config["server_addr"] = resolved
+            self.log(
+                f"联机：frps 地址 {original or '空'} 无法解析，已改用节点域名 {resolved}"
+            )
+        return config
+
     def relay_pick_node(self) -> dict:
         """按在线节点负载选择节点，供自动开房使用。"""
         nodes = self.relay_nodes()
@@ -2822,7 +2834,9 @@ class LauncherService:
         )
         room["api"] = api
         self._relay_runner.start(
-            "host", f"room-{room['room_id']}", room["host_frpc"]
+            "host",
+            f"room-{room['room_id']}",
+            self._frpc_with_fallback(room["host_frpc"], api),
         )
         self._relay_room = room
         self._relay_guest = None
@@ -2859,7 +2873,10 @@ class LauncherService:
         client = self._relay_client(api)
         result = client.join(room_id, bind_port=port)
         self._relay_runner.start(
-            "guest", f"guest-{room_id}", result["visitor_frpc"], bind_port=port
+            "guest",
+            f"guest-{room_id}",
+            self._frpc_with_fallback(result["visitor_frpc"], api),
+            bind_port=port,
         )
         entry = {
             "api": api,
