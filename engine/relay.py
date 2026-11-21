@@ -505,17 +505,25 @@ class TunnelRunner:
         self,
         kind: str,
         name: str,
-        frpc: dict,
+        frpc: Optional[dict] = None,
         *,
         bind_port: int = 0,
         timeout: float = 60.0,
+        config_text: Optional[str] = None,
+        config_suffix: str = "toml",
     ) -> Tunnel:
         self.stop()
         exe = ensure_frpc(self.tools_dir)
         room_dir = self.work_dir / name
         room_dir.mkdir(parents=True, exist_ok=True)
-        config_path = room_dir / "frpc.toml"
-        config_path.write_text(frpc_config_text(frpc, kind=kind), encoding="utf-8")
+        config_path = room_dir / f"frpc.{config_suffix}"
+        if config_text is not None:
+            # 第三方服务商（如 ChmlFrp）直接下发配置文件，原样落盘即可。
+            config_path.write_text(config_text, encoding="utf-8")
+        else:
+            config_path.write_text(
+                frpc_config_text(frpc or {}, kind=kind), encoding="utf-8"
+            )
 
         creationflags = 0
         if os.name == "nt":

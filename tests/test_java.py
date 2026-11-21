@@ -271,6 +271,51 @@ class AdoptiumMirrorTest(unittest.TestCase):
             ],
         )
 
+    def _runtime(self, filename: str) -> JavaRuntime:
+        return JavaRuntime(
+            major=25,
+            version="25.0.5",
+            os="windows",
+            arch="x64",
+            url=f"https://example.invalid/{filename}",
+            size=100,
+        )
+
+    def test_discover_prefers_exact_build(self) -> None:
+        html = """
+        <a href="../">../</a>
+        <a href="OpenJDK25U-jre_x64_windows_hotspot_25.0.5_8.zip">a</a>
+        <a href="OpenJDK25U-jre_x64_windows_hotspot_25.0.5.1_2.zip">b</a>
+        <a href="OpenJDK25U-jdk_x64_windows_hotspot_25.0.5_8.zip">c</a>
+        """
+        with mock.patch.object(
+            java_manager.net, "fetch_bytes", return_value=html.encode()
+        ):
+            found = java_manager.discover_mirror_archive(
+                self._runtime("OpenJDK25U-jre_x64_windows_hotspot_25.0.5_8.zip")
+            )
+        self.assertTrue(found.endswith("OpenJDK25U-jre_x64_windows_hotspot_25.0.5_8.zip"))
+
+    def test_discover_falls_back_to_directory_file(self) -> None:
+        html = """
+        <a href="OpenJDK25U-jre_x64_windows_hotspot_25.0.5_8.zip">a</a>
+        """
+        with mock.patch.object(
+            java_manager.net, "fetch_bytes", return_value=html.encode()
+        ):
+            found = java_manager.discover_mirror_archive(
+                self._runtime("OpenJDK25U-jre_x64_windows_hotspot_25.0.5.1_2.zip")
+            )
+        self.assertTrue(found.endswith("OpenJDK25U-jre_x64_windows_hotspot_25.0.5_8.zip"))
+
+    def test_discover_returns_none_on_error(self) -> None:
+        with mock.patch.object(
+            java_manager.net, "fetch_bytes", side_effect=OSError("offline")
+        ):
+            self.assertIsNone(
+                java_manager.discover_mirror_archive(self._runtime("x.zip"))
+            )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

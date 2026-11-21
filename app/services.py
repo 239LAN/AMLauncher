@@ -22,7 +22,15 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from engine import mirror as mirror_module
-from engine import mod_info, net, relay as relay_engine, server_list, updater, version_meta
+from engine import (
+    chmlfrp as chmlfrp_engine,
+    mod_info,
+    net,
+    relay as relay_engine,
+    server_list,
+    updater,
+    version_meta,
+)
 from engine.accounts import AccountError, AccountStore, ExternalAuthClient, SkinService, StoredAccount
 from engine.auth_client import AuthClient, AuthError, AuthResult, KeyringTokenStore
 from engine.content_manager import (
@@ -133,6 +141,10 @@ class LauncherService:
         self._relay_sessions: dict[str, dict] = {}
         self._relay_room: Optional[dict] = None
         self._relay_guest: Optional[dict] = None
+        # ChmlFrp：登录信息存 keyring，当前隧道只保存在本次运行内。
+        self._chmlfrp_account: Optional[dict] = None
+        self._chmlfrp_loaded = False
+        self._chmlfrp_room: Optional[dict] = None
         if self.config.hash_store:
             recovered = self._recover_runs()
             self._ensure_work_tree(recovered)
@@ -335,6 +347,7 @@ class LauncherService:
         self._relay_runner.stop()
         self._relay_room = None
         self._relay_guest = None
+        self._chmlfrp_room = None
         if not self.config.hash_store or self._storage_closed:
             return
         self._storage_closed = True
@@ -2781,6 +2794,8 @@ class LauncherService:
         mods: Optional[list[dict]] = None,
         mods_declared: bool = False,
     ) -> dict:
+        if self._chmlfrp_room:
+            raise relay_engine.RelayError("请先关闭当前 ChmlFrp 房间")
         if not api:
             api = str(self.relay_pick_node().get("api") or "")
         if not (1024 <= int(local_port) <= 65535):
@@ -2838,6 +2853,8 @@ class LauncherService:
         raise relay_engine.RelayError("房间不存在或已过期", code="404")
 
     def relay_join_room(self, api: str, room_id: str, *, bind_port: int = 0) -> dict:
+        if self._chmlfrp_room:
+            raise relay_engine.RelayError("请先关闭当前 ChmlFrp 房间")
         port = int(bind_port) or relay_engine.pick_free_port()
         client = self._relay_client(api)
         result = client.join(room_id, bind_port=port)
@@ -2897,8 +2914,179 @@ class LauncherService:
             "tunnel": self._relay_runner.status(),
             "room": self._relay_room,
             "guest": self._relay_guest,
+            "chmlfrp": self._chmlfrp_room,
             "master": self.relay_master(),
         }
+
+    # ------------------------------------------------------------- ChmlFrp
+    CHMLFRP_SECRET = "chmlfrp_account"
+
+    def chmlfrp_account(self) -> Optional[dict]:
+        """读取已保存的 ChmlFrp 登录信息（token 只在 keyring 中）。"""
+        if not self._chmlfrp_loaded:
+            self._chmlfrp_loaded = True
+            raw = self.secrets.get(self.CHMLFRP_SECRET)
+            try:
+                data = json.loads(raw) if raw else None
+            except (TypeError, ValueError):
+                data = None
+            if isinstance(data, dict) and data.get("access_token"):
+                self._chmlfrp_account = data
+        return self._chmlfrp_account
+
+    def chmlfrp_login(self) -> dict:
+        account = chmlfrp_engine.sso_login()
+        self.secrets.set(
+            self.CHMLFRP_SECRET, json.dumps(account, ensure_ascii=False)
+        )
+        self._chmlfrp_account = account
+        self._chmlfrp_loaded = True
+        self.log(f"ChmlFrp：已登录 {account.get('username')}")
+        return account
+
+    def chmlfrp_logout(self) -> None:
+        account = self.chmlfrp_account() or {}
+        chmlfrp_engine.logout(str(account.get("refresh_token") or ""))
+        self.secrets.delete(self.CHMLFRP_SECRET)
+        self._chmlfrp_account = None
+        self._chmlfrp_loaded = True
+        self.log("ChmlFrp：已退出登录")
+
+    def _chmlfrp_auth(self) -> tuple[str, str]:
+        """返回 (access_token, usertoken)，过期时自动刷新。"""
+        account = self.chmlfrp_account()
+        if not account or not account.get("access_token"):
+            raise chmlfrp_engine.ChmlFrpError("请先登录 ChmlFrp")
+        access = str(account["access_token"])
+        expires = float(account.get("expires_at") or 0)
+        if expires and expires < time.time() + 60:
+            refreshed = chmlfrp_engine.refresh_session(
+                str(account.get("refresh_token") or "")
+            )
+            account = {**account, **refreshed}
+            self._chmlfrp_account = account
+            self.secrets.set(
+                self.CHMLFRP_SECRET, json.dumps(account, ensure_ascii=False)
+            )
+            access = str(account["access_token"])
+        usertoken = str(account.get("usertoken") or "")
+        if not usertoken:
+            info = chmlfrp_engine.userinfo(access)
+            usertoken = str(info.get("usertoken") or "")
+            if not usertoken:
+                raise chmlfrp_engine.ChmlFrpError("登录已过期，请重新登录")
+            account = {
+                **account,
+                "usertoken": usertoken,
+                "username": str(info.get("username") or account.get("username") or ""),
+            }
+            self._chmlfrp_account = account
+            self.secrets.set(
+                self.CHMLFRP_SECRET, json.dumps(account, ensure_ascii=False)
+            )
+        return access, usertoken
+
+    def chmlfrp_nodes(self) -> list[dict]:
+        """在线节点按 TCP 延迟从低到高排序。"""
+        access, _ = self._chmlfrp_auth()
+        nodes = chmlfrp_engine.available_nodes(access)
+        if not nodes:
+            raise chmlfrp_engine.ChmlFrpError("暂无可用节点，请稍后重试")
+        return nodes
+
+    def chmlfrp_create_room(
+        self,
+        *,
+        node: str,
+        local_port: int,
+        remote_port: int = 0,
+        tunnel_name: str = "",
+        encryption: bool = True,
+        compression: bool = False,
+    ) -> dict:
+        access, usertoken = self._chmlfrp_auth()
+        if self._relay_room or self._relay_guest:
+            raise chmlfrp_engine.ChmlFrpError("请先关闭当前的 AMLauncher 房间")
+        if self._chmlfrp_room:
+            raise chmlfrp_engine.ChmlFrpError("已有进行中的 ChmlFrp 房间")
+        local_port = int(local_port or 0)
+        if not (1024 <= local_port <= 65535):
+            raise chmlfrp_engine.ChmlFrpError("内网端口不合法")
+        if not relay_engine.probe_minecraft(local_port):
+            raise chmlfrp_engine.ChmlFrpError(
+                "所选端口不是 Minecraft 服务，请先在游戏内对局域网开放后重试"
+            )
+        node = str(node or "").strip()
+        if not node:
+            raise chmlfrp_engine.ChmlFrpError("请选择节点")
+        detail = chmlfrp_engine.node_detail(access, node)
+        if str(detail.get("state") or "").lower() != "online":
+            raise chmlfrp_engine.ChmlFrpError("所选节点当前不在线，请换一个节点")
+
+        name = chmlfrp_engine.normalize_tunnel_name(tunnel_name, local_port)
+        port = chmlfrp_engine.pick_remote_port(detail, int(remote_port or 0))
+        tunnel = chmlfrp_engine.create_or_update_tunnel(
+            access,
+            usertoken,
+            name=name,
+            node=node,
+            local_port=local_port,
+            remote_port=port,
+            encryption=bool(encryption),
+            compression=bool(compression),
+        )
+        config = chmlfrp_engine.tunnel_config(access, node, name)
+        try:
+            self._relay_runner.start(
+                "chmlfrp",
+                f"chmlfrp-{name}",
+                config_text=config,
+                config_suffix="toml",
+            )
+        except relay_engine.RelayError as exc:
+            raise chmlfrp_engine.ChmlFrpError(str(exc)) from exc
+
+        address = chmlfrp_engine.connect_address(detail, tunnel)
+        room = {
+            "provider": "chmlfrp",
+            "name": name,
+            "node": node,
+            "node_area": str(detail.get("area") or ""),
+            "local_port": local_port,
+            "remote_port": port,
+            "address": address,
+            "encryption": bool(encryption),
+            "compression": bool(compression),
+            "connect": address,
+        }
+        self._chmlfrp_room = room
+        self.log(f"ChmlFrp：隧道已就绪 {address}（节点 {node}）")
+        return room
+
+    def chmlfrp_close_room(self) -> None:
+        room, self._chmlfrp_room = self._chmlfrp_room, None
+        self._relay_runner.stop()
+        if not room:
+            return
+        account = self.chmlfrp_account() or {}
+        access = str(account.get("access_token") or "")
+        if access:
+            try:
+                target = next(
+                    (
+                        item
+                        for item in chmlfrp_engine.list_tunnels(access)
+                        if str(item.get("name")) == str(room.get("name") or "")
+                    ),
+                    None,
+                )
+                if target and (target.get("id") or target.get("tunnelid")):
+                    chmlfrp_engine.delete_tunnel(
+                        access, str(target.get("id") or target.get("tunnelid"))
+                    )
+            except chmlfrp_engine.ChmlFrpError as exc:
+                self.log(f"ChmlFrp：关闭房间时服务端返回异常（{exc}）")
+        self.log("ChmlFrp：已关闭房间")
 
     # ---- 局域网端口 / 模组清单 / 启动参数 ----
 

@@ -78,6 +78,33 @@ def adoptium_mirror_candidates(runtime: JavaRuntime) -> list[str]:
     ]
 
 
+def discover_mirror_archive(runtime: JavaRuntime) -> Optional[str]:
+    """在 TUNA 目录里找同 major/架构/系统的最新压缩包。
+
+    TUNA 同步的构建号可能和 Adoptium API 的 latest 不完全一致（例如
+    Java 25 的 ``25.0.5_8`` 与 ``25.0.5.1_2``），此时按目录实际文件回退。
+    """
+    base = f"{ADOPTIUM_MIRROR}/{runtime.major}/jre/{runtime.arch}/{runtime.os}/"
+    try:
+        html = net.fetch_bytes(base, timeout=8).decode("utf-8", "replace")
+    except Exception:  # noqa: BLE001 - 镜像不可用时交给调用方回退官方源
+        return None
+    suffix = _archive_suffix(runtime.url)
+    prefix = f"OpenJDK{runtime.major}U-jre_{runtime.arch}_{runtime.os}_hotspot_"
+    names = [
+        item
+        for item in re.findall(r'href="([^"?]+)"', html)
+        if item.startswith(prefix) and item.endswith(suffix)
+    ]
+    if not names:
+        return None
+    exact = runtime.url.rsplit("/", 1)[-1]
+    if exact in names:
+        return base + exact
+    names.sort(key=_version_key, reverse=True)
+    return base + names[0]
+
+
 # --------------------------------------------------------------------- 纯函数
 
 _ADOPTIUM_OS = {
@@ -572,18 +599,40 @@ class JavaManager:
             if progress:
                 progress(delta)
 
-        candidates: list[str] = []
-        for item in [*adoptium_mirror_candidates(runtime), *net.url_candidates(runtime.url)]:
-            if item not in candidates:
-                candidates.append(item)
-        net.download_file(
-            runtime.url,
-            archive,
-            expected_size=runtime.size,
-            on_chunk=_on_chunk,
-            cancel=cancel,
-            candidates=candidates,
+        mirror = discover_mirror_archive(runtime)
+        # 镜像有同构建的包时按官方大小校验；构建号不同（如 25.0.5_8）时跳过大小校验。
+        same_build = bool(
+            mirror
+            and mirror.rsplit("/", 1)[-1] == runtime.url.rsplit("/", 1)[-1]
         )
+        size_hint = runtime.size if (mirror is None or same_build) else 0
+        mirror_candidates = [mirror] if mirror else adoptium_mirror_candidates(runtime)
+        downloaded = False
+        if mirror_candidates:
+            try:
+                net.download_file(
+                    runtime.url,
+                    archive,
+                    expected_size=size_hint,
+                    on_chunk=_on_chunk,
+                    cancel=cancel,
+                    candidates=mirror_candidates,
+                )
+                downloaded = True
+            except net.DownloadCancelled:
+                raise
+            except Exception:  # noqa: BLE001 - 镜像失败时回退官方源
+                archive.unlink(missing_ok=True)
+                archive.with_name(archive.name + ".part").unlink(missing_ok=True)
+        if not downloaded:
+            net.download_file(
+                runtime.url,
+                archive,
+                expected_size=runtime.size,
+                on_chunk=_on_chunk,
+                cancel=cancel,
+                candidates=net.url_candidates(runtime.url),
+            )
 
         if target_dir.exists():
             shutil.rmtree(target_dir, ignore_errors=True)

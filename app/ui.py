@@ -22,6 +22,7 @@ from typing import Callable, Optional
 
 from nicegui import app, background_tasks, run, ui
 
+from engine.chmlfrp import tunnel_name_for
 from engine.version import APP_NAME, APP_VERSION
 
 from .services import LauncherService
@@ -818,6 +819,17 @@ class LauncherUI:
         self.relay_create_hidden = None
         self.relay_create_mods_label = None
         self.relay_create_primary = None
+        # 创建房间服务商：aml（官方）或 chmlfrp。
+        self._relay_create_provider_value = "aml"
+        self._chmlfrp_nodes: Optional[list[dict]] = None
+        self._chmlfrp_nodes_error = ""
+        self._chmlfrp_nodes_loading = False
+        self.relay_chmlfrp_node = None
+        self.relay_chmlfrp_local_port = None
+        self.relay_chmlfrp_remote_port = None
+        self.relay_chmlfrp_name = None
+        self.relay_chmlfrp_encrypt = None
+        self.relay_chmlfrp_compress = None
 
     # ===================================================================== 骨架
     async def build(self) -> None:
@@ -1057,10 +1069,15 @@ class LauncherUI:
     ) -> None:
         """数字用 JS 在 200ms 内插值到目标值；进度条宽度由 CSS transition 播放动画。"""
         value = max(0.0, min(100.0, float(percent or 0.0)))
-        ui.run_javascript(
-            "window.amlProgress("
-            f"{json.dumps(label_id)}, {json.dumps(bar_id)}, {value:.2f}, 200);"
-        )
+        try:
+            ui.run_javascript(
+                "window.amlProgress("
+                f"{json.dumps(label_id)}, {json.dumps(bar_id)}, {value:.2f}, 200);"
+            )
+        except RuntimeError:
+            # 后台任务里没有界面上下文（例如启动流程刚创建任务时），
+            # 跳过这一帧即可，250ms 后的定时器会带上正确的上下文刷新。
+            pass
 
     def _apply_launch_progress(self) -> None:
         percent = max(0.0, min(100.0, float(self._launch_progress.get("percent") or 0.0)))
@@ -1522,6 +1539,10 @@ class LauncherUI:
         background_tasks.create(self._on_home_launch())
 
     async def _on_home_launch(self) -> None:
+        with self.pages["home"]:
+            await self._on_home_launch_impl()
+
+    async def _on_home_launch_impl(self) -> None:
         if self._home_launching:
             return
         account = self._active_account()
@@ -1554,7 +1575,7 @@ class LauncherUI:
         self.home_launch.props("icon=close")
         self.home_launch.classes(remove="aml-launch", add="aml-launch-cancel")
         if self._home_launch_timer is None:
-            self._home_launch_timer = ui.timer(0.2, self._sync_home_launch, active=False)
+            self._home_launch_timer = ui.timer(0.25, self._sync_home_launch, active=False)
         self._home_launch_timer.active = True
 
     def _sync_home_launch(self) -> None:
@@ -1579,6 +1600,11 @@ class LauncherUI:
         self.home_launch.text = "取消中…"
 
     def _finish_home_launch(self, error: str) -> None:
+        # 启动流程在后台任务里执行，结束时没有界面上下文，这里显式进入启动页插槽。
+        with self.pages["home"]:
+            self._finish_home_launch_ui(error)
+
+    def _finish_home_launch_ui(self, error: str) -> None:
         self._home_launching = False
         self._launch_done = True
         if self._home_launch_timer is not None:
@@ -4526,7 +4552,7 @@ class LauncherUI:
             ui.separator()
             with ui.row().classes("w-full items-center gap-3 no-wrap"):
                 self.java_major = ui.select(
-                    [8, 11, 17, 21], value=21, label="下载 Java 主版本"
+                    [8, 11, 17, 21, 25], value=21, label="下载 Java 主版本"
                 ).classes("flex-1").props("dense outlined")
                 ui.button("下载并安装", icon="download", on_click=self._install_java).props(
                     "unelevated dense no-caps color=primary"
@@ -4641,7 +4667,8 @@ class LauncherUI:
             self._finish_home_launch("")
             # 有些崩溃（缺原生库等）发生在启动后的几秒内，此时已经提示过成功，
             # 这里补一次延迟检查，避免「界面没反应、也没报错」。
-            ui.timer(10.0, self._warn_game_exited, once=True)
+            with self.pages["home"]:
+                ui.timer(10.0, self._warn_game_exited, once=True)
             return
         self._launch_done = True
 
@@ -4702,7 +4729,7 @@ class LauncherUI:
                 ).props("flat dense round size=sm").tooltip("返回联机")
                 with ui.column().classes("gap-0 no-wrap"):
                     ui.label("创建联机房间").classes("text-[18px] font-semibold")
-                    ui.label("选择服务商、端口与人数上限，生成 4 位房间号").classes("aml-sub")
+                    ui.label("官方节点生成 4 位房间号；ChmlFrp 生成公网连接地址").classes("aml-sub")
             self.relay_create_body = ui.column().classes("w-full gap-3")
             self._render_relay_create_page()
 
@@ -4713,37 +4740,43 @@ class LauncherUI:
         self.relay_players_label = None
         self.relay_tunnel_label = None
         master = self.service.relay_master()
-        self.relay_sub.text = "子节点由主节点自动分配" if master else "联机服务不可用"
+        self.relay_sub.text = (
+            "子节点由主节点自动分配" if master else "官方联机不可用，可使用 ChmlFrp"
+        )
         status = self.service.relay_status()
         host_room = status.get("room")
         guest = status.get("guest")
+        chmlfrp_room = status.get("chmlfrp")
         if self.relay_my_room_button is not None:
             if host_room:
                 code = str(host_room.get("join_code") or "")
                 self.relay_my_room_button.text = f"我的房间 {code}"
+                self.relay_my_room_button.set_visibility(True)
+            elif chmlfrp_room:
+                self.relay_my_room_button.text = "我的房间"
                 self.relay_my_room_button.set_visibility(True)
             else:
                 self.relay_my_room_button.set_visibility(False)
 
         with self.relay_body:
             if not master:
-                with ui.card().classes("aml-card w-full p-5 gap-1"):
-                    ui.label("尚未配置联机主节点").classes("text-[15px] font-semibold")
-                    ui.label(
-                        "点击右上角齿轮填写主节点地址，例如 https://relay.example.com:3380"
-                    ).classes("aml-sub")
-                with ui.row().classes("w-full gap-3 flex-wrap items-stretch"):
-                    self._render_create_card()
-                if notify:
-                    ui.notify(notify, type="positive")
-                return
+                with ui.card().classes("aml-card w-full p-4 gap-1"):
+                    ui.label("AMLauncher 官方联机暂不可用").classes(
+                        "text-[14px] font-semibold"
+                    )
+                    ui.label("仍可使用 ChmlFrp 创建公网隧道。").classes("aml-sub")
 
             if guest:
                 self._render_guest_room(guest, status.get("tunnel") or {})
+            if chmlfrp_room:
+                self._render_chmlfrp_host_card(
+                    chmlfrp_room, status.get("tunnel") or {}
+                )
 
             with ui.row().classes("w-full gap-3 flex-wrap items-stretch"):
                 self._render_create_card()
-                self._render_room_list()
+                if master:
+                    self._render_room_list()
             if notify:
                 ui.notify(notify, type="positive")
 
@@ -4840,6 +4873,79 @@ class LauncherUI:
             )
         if room and self.relay_players_label is not None:
             self.relay_players_label.text = f"在线玩家：{room.get('players') or 1} 人"
+
+    def _render_chmlfrp_host_card(self, room: dict, tunnel: dict) -> None:
+        address = str(room.get("address") or room.get("connect") or "")
+        with ui.card().classes("aml-card w-full p-5 gap-2"):
+            with ui.row().classes("w-full items-center justify-between no-wrap"):
+                with ui.column().classes("gap-0 no-wrap min-w-0"):
+                    ui.label("我的房间（ChmlFrp）").classes("aml-sub")
+                    ui.label(address).classes("text-[22px] font-semibold").style(
+                        "font-family: Consolas, monospace; word-break: break-all"
+                    )
+                ui.button(
+                    "复制地址", on_click=lambda: self._copy(address, "连接地址已复制")
+                ).props("unelevated dense no-caps color=primary")
+            ui.label(
+                f"节点 {room.get('node') or '未知'} · 本机端口 {room.get('local_port') or '?'}"
+            ).classes("aml-sub")
+            self.relay_tunnel_label = ui.label("").classes("aml-sub")
+            self._sync_relay_labels(None, tunnel)
+            with ui.row().classes("w-full justify-end gap-2"):
+                ui.button(
+                    "关闭房间",
+                    on_click=lambda: background_tasks.create(
+                        self._relay_close_chmlfrp_room()
+                    ),
+                ).props("flat dense no-caps color=negative")
+
+    def _relay_show_chmlfrp_room(self, room: dict, *, detail: bool = False) -> None:
+        slot = self.pages.get("multiplayer")
+        if slot is None:
+            return
+        address = str(room.get("address") or room.get("connect") or "")
+        tunnel = self.service.relay_status().get("tunnel") or {}
+        with slot:
+            with ui.dialog() as dialog, ui.card().classes("w-[480px] gap-3 items-center"):
+                with ui.row().classes("w-full items-center justify-between no-wrap"):
+                    ui.label("我的房间" if detail else "房间已创建").classes(
+                        "text-[16px] font-semibold"
+                    )
+                    if detail:
+                        ui.button(
+                            "关闭房间",
+                            on_click=lambda: background_tasks.create(
+                                self._relay_close_chmlfrp_room(dialog)
+                            ),
+                        ).props("flat dense no-caps color=negative")
+                ui.label(address).classes(
+                    "text-[26px] font-semibold text-center w-full"
+                ).style("font-family: Consolas, monospace; word-break: break-all")
+                ui.label(
+                    "把地址发给好友，在「多人游戏 → 添加服务器」中填入即可加入。"
+                ).classes("aml-sub text-center")
+                ui.label(
+                    f"节点 {room.get('node') or '未知'} · 本机端口 {room.get('local_port') or '?'}"
+                ).classes("aml-sub")
+                ui.label(
+                    "隧道已连接" if tunnel.get("running") else "隧道未运行"
+                ).classes("aml-sub")
+                with ui.row().classes("justify-center gap-2"):
+                    ui.button(
+                        "复制地址", on_click=lambda: self._copy(address, "连接地址已复制")
+                    ).props("unelevated dense no-caps color=primary")
+                    ui.button("完成", on_click=dialog.close).props("flat dense no-caps")
+        dialog.open()
+
+    @_relay_ui_task
+    async def _relay_close_chmlfrp_room(self, dialog=None) -> None:
+        if dialog is not None:
+            dialog.close()
+        await run.io_bound(self.service.chmlfrp_close_room)
+        self._render_relay_body(notify="房间已关闭")
+
+    def _relay_my_chmlfrp_room(self) -> Optional[dict]:
+        return self.service.relay_status().get("chmlfrp")
 
     async def _relay_tick(self) -> None:
         if self.current_view != "multiplayer" or self.relay_tunnel_label is None:
@@ -5143,6 +5249,10 @@ class LauncherUI:
 
     @_relay_ui_task
     async def _relay_open_host_dialog(self) -> None:
+        chmlfrp_room = self._relay_my_chmlfrp_room()
+        if chmlfrp_room:
+            self._relay_show_chmlfrp_room(chmlfrp_room, detail=True)
+            return
         room = self.service.relay_status().get("room")
         if not room:
             ui.notify("当前没有进行中的房间", type="warning")
@@ -5190,9 +5300,6 @@ class LauncherUI:
 
     @_relay_ui_task
     async def _relay_start_create(self) -> None:
-        if not self.service.relay_master():
-            ui.notify("当前版本未内置联机服务，请更新启动器", type="warning")
-            return
         ui.notify("正在扫描已启动的 Minecraft 端口…")
         try:
             info = await run.io_bound(self.service.relay_scan_ports)
@@ -5252,101 +5359,317 @@ class LauncherUI:
                     ).props("unelevated dense no-caps color=primary")
                 return
 
+            provider = self._relay_create_provider_value
             version = self._relay_create_version or self.service.config.last_version or "unknown"
             with ui.card().classes("aml-card w-full p-5 gap-3"):
                 ui.label("房间信息").classes("text-[15px] font-semibold")
                 with ui.row().classes("w-full gap-3 no-wrap"):
-                    self.relay_create_name = ui.input(
-                        "房间名称", value="我的世界联机"
-                    ).props("dense outlined").classes("flex-1")
+                    if provider == "aml":
+                        self.relay_create_name = ui.input(
+                            "房间名称", value="我的世界联机"
+                        ).props("dense outlined").classes("flex-1")
                     self.relay_create_provider = ui.select(
                         {
                             "aml": "AMLauncher 官方",
-                            "chmlfrp": "ChmlFRP（暂不可用）",
-                            "loliafrp": "LoliaFRP（暂不可用）",
+                            "chmlfrp": "ChmlFrp",
                         },
-                        value="aml",
+                        value=provider,
                         label="联机服务商",
                     ).props("dense outlined").classes("w-[240px]")
-                with ui.row().classes("w-full items-end gap-3 no-wrap"):
-                    self.relay_create_port = ui.select(
-                        {
-                            int(item["port"]): f"127.0.0.1:{item['port']} · Minecraft"
-                            for item in self._relay_create_ports
-                        },
-                        value=int(self._relay_create_ports[0]["port"]),
-                        label="游戏监听端口",
-                    ).props("dense outlined").classes("flex-1")
-                    ui.button(
-                        icon="refresh",
-                        on_click=lambda: background_tasks.create(self._relay_rescan_create_ports()),
-                    ).props("flat dense round size=sm").tooltip("重新扫描端口")
-                ui.label(
-                    f"当前客户端：{version} · 已检测端口 {len(self._relay_create_ports)} 个"
-                ).classes("aml-sub")
+                    self.relay_create_provider.on_value_change(self._on_provider_change)
+                if provider == "aml":
+                    self._render_aml_create_fields(version)
+                else:
+                    self._render_chmlfrp_form(version)
 
-                with ui.row().classes("w-full items-center gap-3 no-wrap"):
-                    self.relay_create_players = ui.slider(
-                        min=2, max=16, value=8, step=1
-                    ).props("label").classes("flex-1")
-                    self.relay_create_players_label = ui.label("上限 8 人").classes(
-                        "aml-sub w-[68px] text-right"
-                    )
-                    self.relay_create_players.on_value_change(
-                        lambda e: setattr(
-                            self.relay_create_players_label, "text", f"上限 {e.value} 人"
-                        )
-                    )
-                self.relay_create_hidden = ui.switch(
-                    "隐藏房间（仅可通过完整房间号搜索加入）"
-                ).props("dense")
-
-            with ui.card().classes("aml-card w-full p-5 gap-2"):
-                with ui.row().classes("w-full items-center justify-between no-wrap"):
-                    ui.label("模组清单").classes("text-[15px] font-semibold")
-                    ui.button(
-                        "检查 Modrinth 链接",
-                        on_click=lambda: background_tasks.create(self._relay_resolve_create_mods()),
-                    ).props("flat dense no-caps")
-                self.relay_create_mods_label = ui.label(
-                    self._relay_create_mods_text()
-                ).classes("aml-sub")
-                with ui.element("div").classes(
-                    "aml-dropzone w-full items-center justify-center gap-1"
-                ).props("data-aml-drop=aml-relay-mods data-aml-click=1"):
-                    ui.icon("upload_file").classes("text-[24px]")
-                    ui.label("点击或拖入模组清单（.json / .txt）").classes("aml-sub")
-                ui.upload(
-                    on_upload=self._relay_upload_mods,
-                    auto_upload=True,
-                    multiple=False,
-                ).props("id=aml-relay-mods accept=.json,.txt").classes("hidden")
-                if self._relay_create_mods:
-                    names = "、".join(
-                        str(item.get("filename") or item.get("name") or "")
-                        for item in self._relay_create_mods[:6]
-                    )
-                    if len(self._relay_create_mods) > 6:
-                        names += f" 等 {len(self._relay_create_mods)} 个"
-                    ui.label(names).classes("aml-sub truncate")
-                if self._relay_create_mods_missing:
-                    ui.label(
-                        f"有 {self._relay_create_mods_missing} 个 Mod 未查到 Modrinth/CurseForge 链接。"
-                        "成员未安装或禁用这些 Mod 时可能无法正常进入，请提示成员自行安装或接受风险。"
-                    ).classes("text-[12px]").style("color: #d97706")
-                ui.label(
-                    "未上传清单时，成员加入将跳过模组校验；上传后会自动比对并提示缺失项。"
-                ).classes("aml-sub")
+            if provider == "aml":
+                self._render_relay_mod_card()
 
             with ui.row().classes("w-full justify-end gap-2"):
                 ui.button(
                     "取消", on_click=lambda: self._select_view("multiplayer")
                 ).props("flat dense no-caps")
-                self.relay_create_primary = ui.button(
-                    "创建房间",
-                    on_click=lambda: background_tasks.create(self._relay_submit_create()),
+                if provider == "aml":
+                    self.relay_create_primary = ui.button(
+                        "创建房间",
+                        on_click=lambda: background_tasks.create(self._relay_submit_create()),
+                    ).props("unelevated dense no-caps color=primary")
+                    self.relay_create_primary.set_enabled(bool(self._relay_create_ports))
+                else:
+                    account = self.service.chmlfrp_account()
+                    self.relay_create_primary = ui.button(
+                        "创建隧道",
+                        on_click=lambda: background_tasks.create(self._chmlfrp_submit()),
+                    ).props("unelevated dense no-caps color=primary")
+                    self.relay_create_primary.set_enabled(
+                        bool(account) and bool(self._chmlfrp_nodes)
+                    )
+
+    def _on_provider_change(self, event) -> None:
+        value = str(event.value or "aml")
+        if value == self._relay_create_provider_value:
+            return
+        self._relay_create_provider_value = value
+        self._render_relay_create_page()
+
+    def _render_aml_create_fields(self, version: str) -> None:
+        with ui.row().classes("w-full items-end gap-3 no-wrap"):
+            self.relay_create_port = ui.select(
+                {
+                    int(item["port"]): f"127.0.0.1:{item['port']} · Minecraft"
+                    for item in self._relay_create_ports
+                },
+                value=int(self._relay_create_ports[0]["port"]),
+                label="游戏监听端口",
+            ).props("dense outlined").classes("flex-1")
+            ui.button(
+                icon="refresh",
+                on_click=lambda: background_tasks.create(self._relay_rescan_create_ports()),
+            ).props("flat dense round size=sm").tooltip("重新扫描端口")
+        ui.label(
+            f"当前客户端：{version} · 已检测端口 {len(self._relay_create_ports)} 个"
+        ).classes("aml-sub")
+
+        with ui.row().classes("w-full items-center gap-3 no-wrap"):
+            self.relay_create_players = ui.slider(
+                min=2, max=16, value=8, step=1
+            ).props("label").classes("flex-1")
+            self.relay_create_players_label = ui.label("上限 8 人").classes(
+                "aml-sub w-[68px] text-right"
+            )
+            self.relay_create_players.on_value_change(
+                lambda e: setattr(
+                    self.relay_create_players_label, "text", f"上限 {e.value} 人"
+                )
+            )
+        self.relay_create_hidden = ui.switch(
+            "隐藏房间（仅可通过完整房间号搜索加入）"
+        ).props("dense")
+
+    def _render_relay_mod_card(self) -> None:
+        with ui.card().classes("aml-card w-full p-5 gap-2"):
+            with ui.row().classes("w-full items-center justify-between no-wrap"):
+                ui.label("模组清单").classes("text-[15px] font-semibold")
+                ui.button(
+                    "检查 Modrinth 链接",
+                    on_click=lambda: background_tasks.create(self._relay_resolve_create_mods()),
+                ).props("flat dense no-caps")
+            self.relay_create_mods_label = ui.label(
+                self._relay_create_mods_text()
+            ).classes("aml-sub")
+            with ui.element("div").classes(
+                "aml-dropzone w-full items-center justify-center gap-1"
+            ).props("data-aml-drop=aml-relay-mods data-aml-click=1"):
+                ui.icon("upload_file").classes("text-[24px]")
+                ui.label("点击或拖入模组清单（.json / .txt）").classes("aml-sub")
+            ui.upload(
+                on_upload=self._relay_upload_mods,
+                auto_upload=True,
+                multiple=False,
+            ).props("id=aml-relay-mods accept=.json,.txt").classes("hidden")
+            if self._relay_create_mods:
+                names = "、".join(
+                    str(item.get("filename") or item.get("name") or "")
+                    for item in self._relay_create_mods[:6]
+                )
+                if len(self._relay_create_mods) > 6:
+                    names += f" 等 {len(self._relay_create_mods)} 个"
+                ui.label(names).classes("aml-sub truncate")
+            if self._relay_create_mods_missing:
+                ui.label(
+                    f"有 {self._relay_create_mods_missing} 个 Mod 未查到 Modrinth/CurseForge 链接。"
+                    "成员未安装或禁用这些 Mod 时可能无法正常进入，请提示成员自行安装或接受风险。"
+                ).classes("text-[12px]").style("color: #d97706")
+            ui.label(
+                "未上传清单时，成员加入将跳过模组校验；上传后会自动比对并提示缺失项。"
+            ).classes("aml-sub")
+
+    # ----------------------------------------------------------- ChmlFrp 表单
+    def _render_chmlfrp_form(self, version: str) -> None:
+        account = self.service.chmlfrp_account()
+        if not account:
+            with ui.column().classes("w-full gap-2 items-start"):
+                ui.label("登录 ChmlFrp 后即可创建公网隧道。").classes("aml-sub")
+                ui.button(
+                    "登录 ChmlFrp",
+                    icon="login",
+                    on_click=self._chmlfrp_login_dialog,
                 ).props("unelevated dense no-caps color=primary")
-                self.relay_create_primary.set_enabled(bool(self._relay_create_ports))
+            return
+
+        with ui.row().classes("w-full items-center justify-between no-wrap"):
+            ui.label(f"已登录：{account.get('username') or '未知用户'}").classes(
+                "text-[13px] font-medium"
+            )
+            ui.button(
+                "切换用户", icon="swap_horiz", on_click=self._chmlfrp_switch_user
+            ).props("flat dense no-caps")
+
+        if self._chmlfrp_nodes is None and not self._chmlfrp_nodes_loading:
+            self._chmlfrp_nodes_loading = True
+            background_tasks.create(self._load_chmlfrp_nodes())
+        if self._chmlfrp_nodes_error:
+            with ui.row().classes("w-full items-center gap-2 no-wrap"):
+                ui.label(f"节点获取失败：{self._chmlfrp_nodes_error}").classes(
+                    "aml-sub flex-1"
+                )
+                ui.button(
+                    "重试", on_click=self._chmlfrp_refresh_nodes
+                ).props("flat dense no-caps")
+            return
+        if self._chmlfrp_nodes_loading or self._chmlfrp_nodes is None:
+            with ui.row().classes("items-center gap-2"):
+                ui.spinner(size="18px")
+                ui.label("正在获取节点并测试延迟…").classes("aml-sub")
+            return
+        if not self._chmlfrp_nodes:
+            ui.label("暂无可用的 ChmlFrp 节点").classes("aml-sub")
+            return
+
+        default_port = int(self._relay_create_ports[0]["port"])
+        options = {
+            str(node["name"]): (
+                f"{node['name']} · {node.get('area') or '未知地区'}"
+                f" · {node['latency_ms']} ms"
+            )
+            for node in self._chmlfrp_nodes
+        }
+        self.relay_chmlfrp_node = ui.select(
+            options,
+            value=str(self._chmlfrp_nodes[0]["name"]),
+            label="节点（默认延迟最低）",
+        ).props("dense outlined").classes("w-full")
+        with ui.expansion("自定义设置", icon="tune").classes("w-full"):
+            with ui.row().classes("w-full items-end gap-3 no-wrap flex-wrap"):
+                self.relay_chmlfrp_local_port = ui.select(
+                    {
+                        int(item["port"]): f"127.0.0.1:{item['port']} · Minecraft"
+                        for item in self._relay_create_ports
+                    },
+                    value=default_port,
+                    label="内网端口",
+                ).props("dense outlined").classes("w-[260px]")
+                self.relay_chmlfrp_remote_port = ui.number(
+                    "外网端口（留空随机）", min=1024, max=65535, precision=0
+                ).props("dense outlined clearable").classes("w-[200px]")
+                self.relay_chmlfrp_name = ui.input(
+                    "隧道名称", value=tunnel_name_for(default_port)
+                ).props("dense outlined").classes("w-[220px]")
+            with ui.row().classes("items-center gap-6 no-wrap"):
+                self.relay_chmlfrp_encrypt = ui.switch("加密数据", value=True).props(
+                    "dense"
+                )
+                self.relay_chmlfrp_compress = ui.switch("压缩数据", value=False).props(
+                    "dense"
+                )
+            ui.label("隧道类型：TCP（Minecraft Java 版）").classes("aml-sub")
+        ui.label(
+            f"当前客户端：{version} · 已检测端口 {len(self._relay_create_ports)} 个"
+        ).classes("aml-sub")
+
+    def _chmlfrp_login_dialog(self) -> None:
+        slot = self.pages.get("relay-create") or self.pages.get("multiplayer")
+        if slot is None:
+            return
+        with slot:
+            with ui.dialog() as dialog, ui.card().classes("w-[420px] gap-3"):
+                ui.label("登录 ChmlFrp").classes("text-[16px] font-semibold")
+                ui.label(
+                    "点击下方按钮会打开浏览器完成授权，令牌仅保存在本机系统凭据管理器。"
+                ).classes("aml-sub")
+                status = ui.label("").classes("aml-sub")
+                with ui.row().classes("w-full justify-end gap-2"):
+                    ui.button("取消", on_click=dialog.close).props("flat dense no-caps")
+                    ui.button(
+                        "打开浏览器登录",
+                        on_click=lambda: background_tasks.create(
+                            self._chmlfrp_login_submit(dialog, status)
+                        ),
+                    ).props("unelevated dense no-caps color=primary")
+        dialog.open()
+
+    @_relay_ui_task
+    async def _chmlfrp_login_submit(self, dialog, status) -> None:
+        status.text = "请在浏览器中完成 ChmlFrp 登录授权…"
+        try:
+            account = await run.io_bound(self.service.chmlfrp_login)
+        except Exception as exc:  # noqa: BLE001
+            status.text = f"登录失败：{exc}"
+            return
+        dialog.close()
+        self._chmlfrp_nodes = None
+        self._chmlfrp_nodes_error = ""
+        self._chmlfrp_nodes_loading = False
+        self._render_relay_create_page()
+        ui.notify(f"已登录 {account.get('username') or 'ChmlFrp'}", type="positive")
+
+    def _chmlfrp_switch_user(self) -> None:
+        background_tasks.create(self._chmlfrp_do_switch_user())
+
+    @_relay_ui_task
+    async def _chmlfrp_do_switch_user(self) -> None:
+        await run.io_bound(self.service.chmlfrp_logout)
+        self._chmlfrp_nodes = None
+        self._chmlfrp_nodes_error = ""
+        self._chmlfrp_nodes_loading = False
+        self._render_relay_create_page()
+
+    def _chmlfrp_refresh_nodes(self) -> None:
+        self._chmlfrp_nodes = None
+        self._chmlfrp_nodes_error = ""
+        self._chmlfrp_nodes_loading = False
+        self._render_relay_create_page()
+
+    @_relay_ui_task
+    async def _load_chmlfrp_nodes(self) -> None:
+        self._chmlfrp_nodes_loading = True
+        self._chmlfrp_nodes_error = ""
+        if self.current_view == "relay-create":
+            self._render_relay_create_page()
+        try:
+            nodes = await run.io_bound(self.service.chmlfrp_nodes)
+            self._chmlfrp_nodes = nodes
+        except Exception as exc:  # noqa: BLE001
+            self._chmlfrp_nodes = []
+            self._chmlfrp_nodes_error = str(exc)
+        finally:
+            self._chmlfrp_nodes_loading = False
+        if self.current_view == "relay-create":
+            self._render_relay_create_page()
+
+    @_relay_ui_task
+    async def _chmlfrp_submit(self) -> None:
+        if not self.service.chmlfrp_account():
+            ui.notify("请先登录 ChmlFrp", type="warning")
+            return
+        node = str(getattr(self.relay_chmlfrp_node, "value", "") or "")
+        if not node:
+            ui.notify("请选择节点", type="warning")
+            return
+        port = int(getattr(self.relay_chmlfrp_local_port, "value", 0) or 0)
+        raw_remote = getattr(self.relay_chmlfrp_remote_port, "value", 0) or 0
+        remote = int(float(raw_remote)) if raw_remote else 0
+        name = str(getattr(self.relay_chmlfrp_name, "value", "") or "")
+        encryption = bool(getattr(self.relay_chmlfrp_encrypt, "value", True))
+        compression = bool(getattr(self.relay_chmlfrp_compress, "value", False))
+        ui.notify("正在创建 ChmlFrp 隧道…")
+        try:
+            room = await run.io_bound(
+                lambda: self.service.chmlfrp_create_room(
+                    node=node,
+                    local_port=port,
+                    remote_port=remote,
+                    tunnel_name=name,
+                    encryption=encryption,
+                    compression=compression,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001
+            ui.notify(f"创建隧道失败：{exc}", type="negative")
+            return
+        self._select_view("multiplayer")
+        self._render_relay_body()
+        self._relay_show_chmlfrp_room(room)
 
     @_relay_ui_task
     async def _relay_rescan_create_ports(self) -> None:
