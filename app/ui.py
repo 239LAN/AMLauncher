@@ -3991,8 +3991,8 @@ class LauncherUI:
                 (
                     "code",
                     "GitHub",
-                    "239LAN/AMinecraftLauncher",
-                    "https://github.com/239LAN/AMinecraftLauncher",
+                    "239LAN/AMLauncher",
+                    "https://github.com/239LAN/AMLauncher",
                 ),
             ]
             for icon, label, text, url in rows:

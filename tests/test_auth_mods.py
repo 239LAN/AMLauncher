@@ -411,7 +411,7 @@ class UpdaterSourceTest(unittest.TestCase):
     """更新下载顺序：官网源 → GH 代理 → GitHub 原始地址。"""
 
     def test_official_first(self) -> None:
-        url = "https://github.com/239LAN/AMinecraftLauncher/releases/download/v1.6.5/AMLauncher-1.6.5.exe"
+        url = "https://github.com/239LAN/AMLauncher/releases/download/v1.6.5/AMLauncher-1.6.5.exe"
         self.assertEqual(
             updater.download_urls(url, "AMLauncher-1.6.5.exe"),
             [

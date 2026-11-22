@@ -16,7 +16,7 @@ from typing import Callable, Optional
 
 from . import net
 
-REPOSITORY = "239LAN/AMinecraftLauncher"
+REPOSITORY = "239LAN/AMLauncher"
 RELEASE_API = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
 OFFICIAL_SITE = "https://amlget.cdn.cxmc.net"
 GH_PROXY = "https://v6.gh-proxy.org/"
