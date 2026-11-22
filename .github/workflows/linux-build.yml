@@ -52,7 +52,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: AMinecraftLauncher-linux-x86_64
-          path: dist/*/A Minecraft Launcher
+          path: dist/*/AMLauncher
 
       - name: Attach to release
         if: inputs.tag != ''
@@ -60,8 +60,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION=$(python -c "from engine.version import APP_VERSION; print(APP_VERSION)")
-          # 先复制成规范文件名：GitHub 会把资产名里的空格转换成点
-          cp "dist/${VERSION}/A Minecraft Launcher" "AMinecraftLauncher-${VERSION}-linux-x86_64"
+          cp "dist/${VERSION}/AMLauncher" "AMinecraftLauncher-${VERSION}-linux-x86_64"
           gh release upload "${{ inputs.tag }}" \
             "AMinecraftLauncher-${VERSION}-linux-x86_64" \
             --clobber

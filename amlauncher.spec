@@ -1,7 +1,7 @@
 ﻿# -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller 打包配置：``pyinstaller aminecraftlauncher.spec``
+"""PyInstaller 打包配置：``pyinstaller amlauncher.spec``
 
-单文件便携版（onefile）：所有依赖打进 ``A Minecraft Launcher.exe``，
+单文件便携版（onefile）：所有依赖打进 ``AMLauncher.exe``，
 首次运行会解压到临时目录；数据仍保存在 exe 同级的 data 目录，便于整体拷贝。
 
 要点：
@@ -84,7 +84,7 @@ exe = EXE(
     analysis.datas,
     [],
     exclude_binaries=False,
-    name="A Minecraft Launcher",
+    name="AMLauncher",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

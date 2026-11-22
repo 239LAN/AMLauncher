@@ -1,7 +1,7 @@
-"""启动器自更新：查询 GitHub Release，下载走公共 GH 代理，退出后替换 exe。
+"""启动器自更新：查询 GitHub Release，下载走官网 CDN / 公共 GH 代理，退出后替换 exe。
 
-下载地址优先使用 ``https://v6.gh-proxy.org/https://github.com/...``，
-代理不可用时自动回退 GitHub 原始地址。
+下载顺序：官网 ``https://amlget.cdn.cxmc.net/<资产名>`` → 公共 GH 代理 →
+GitHub 原始地址；前一个不可用时自动回退。
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import sys
+import urllib.parse
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -17,6 +18,7 @@ from . import net
 
 REPOSITORY = "239LAN/AMinecraftLauncher"
 RELEASE_API = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
+OFFICIAL_SITE = "https://amlget.cdn.cxmc.net"
 GH_PROXY = "https://v6.gh-proxy.org/"
 
 
@@ -126,7 +128,7 @@ def fetch_releases(limit: int = 8, *, timeout: int = 10) -> list[dict]:
 
 
 def _strip_title(body: str) -> str:
-    """去掉描述开头重复的标题行，如 ``## A Minecraft Launcher v1.4.2``。"""
+    """去掉描述开头重复的标题行，如 ``## AMLauncher v1.4.2``。"""
     text = body.strip()
     lines = text.splitlines()
     if lines and lines[0].startswith("#") and "launcher" in lines[0].lower():
@@ -151,17 +153,24 @@ def _pick_asset(assets: list) -> Optional[dict]:
     if not candidates:
         return None
     preferred = [
-        item for item in candidates if "aminecraftlauncher" in str(item.get("name") or "").lower()
+        item
+        for item in candidates
+        if "amlauncher" in str(item.get("name") or "").lower()
+        or "aminecraftlauncher" in str(item.get("name") or "").lower()
     ]
     return (preferred or candidates)[0]
 
 
-def download_urls(url: str) -> list[str]:
-    """代理优先，GitHub 原始地址兜底。"""
-    if not url:
-        return []
-    proxied = url if url.startswith(GH_PROXY) else f"{GH_PROXY}{url}"
-    return [proxied, url] if proxied != url else [url]
+def download_urls(url: str, asset_name: str = "") -> list[str]:
+    """官网源优先，其次公共 GH 代理，最后 GitHub 原始地址。"""
+    candidates: list[str] = []
+    name = str(asset_name or "").strip()
+    if name:
+        candidates.append(f"{OFFICIAL_SITE}/{urllib.parse.quote(name, safe='')}")
+    if url:
+        proxied = url if url.startswith(GH_PROXY) else f"{GH_PROXY}{url}"
+        candidates.extend([proxied, url])
+    return list(dict.fromkeys(candidates))
 
 
 def download(
@@ -184,7 +193,7 @@ def download(
         on_chunk=on_chunk,
         timeout=timeout,
         retries=3,
-        candidates=download_urls(url),
+        candidates=download_urls(url, str(info.get("asset_name") or "")),
         cancel=cancel,
     )
     return dest
@@ -279,4 +288,4 @@ def update_target() -> Path:
             return exe.with_name(f"{exe.stem}-update.exe")
         return exe.with_name(f"{exe.name}-update")
     suffix = ".exe" if os.name == "nt" else ""
-    return Path(os.getcwd()) / "data" / "updates" / f"A Minecraft Launcher-update{suffix}"
+    return Path(os.getcwd()) / "data" / "updates" / f"AMLauncher-update{suffix}"

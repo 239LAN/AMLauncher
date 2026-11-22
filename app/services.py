@@ -2677,7 +2677,7 @@ class LauncherService:
             return updater.update_target()
         directory = self.store.data_dir / "updates"
         directory.mkdir(parents=True, exist_ok=True)
-        return directory / "A Minecraft Launcher-update.exe"
+        return directory / "AMLauncher-update.exe"
 
     def download_launcher_update(
         self,
@@ -2689,7 +2689,7 @@ class LauncherService:
         dest = self._update_target()
         dest.unlink(missing_ok=True)
         dest.with_name(dest.name + ".part").unlink(missing_ok=True)
-        self.log(f"开始下载更新 {info.get('version')}（公共 GH 代理优先）")
+        self.log(f"开始下载更新 {info.get('version')}（官网源优先）")
         updater.download(info, dest, on_chunk=on_chunk, cancel=cancel)
         self.log(f"更新已下载：{dest}")
         return {"path": str(dest), "version": str(info.get("version") or "")}

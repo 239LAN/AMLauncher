@@ -86,7 +86,7 @@ exe = EXE(
     analysis.datas,
     [],
     exclude_binaries=False,
-    name="A Minecraft Launcher",
+    name="AMLauncher",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

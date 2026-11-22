@@ -3958,7 +3958,7 @@ class LauncherUI:
                         f"{APP_NAME} v{APP_VERSION} · 所有数据保存在运行目录下的 data"
                     ).classes("aml-sub")
                 self.settings_toggle = ui.toggle(
-                    {"launcher": "启动器设置", "game": "游戏设置"},
+                    {"launcher": "启动器设置", "game": "游戏设置", "about": "关于"},
                     value="launcher",
                     on_change=lambda e: self._switch_settings(e.value),
                 ).props("unelevated dense no-caps toggle-color=primary")
@@ -3967,13 +3967,48 @@ class LauncherUI:
                 self._build_launcher_settings(view)
             with ui.column().classes("w-full gap-3") as game_body:
                 self._build_game_settings(view)
+            with ui.column().classes("w-full gap-3") as about_body:
+                self._build_about_settings()
 
-        self.settings_bodies = {"launcher": launcher_body, "game": game_body}
+        self.settings_bodies = {
+            "launcher": launcher_body,
+            "game": game_body,
+            "about": about_body,
+        }
         game_body.set_visibility(False)
+        about_body.set_visibility(False)
 
     def _switch_settings(self, value: str) -> None:
         for key, body in self.settings_bodies.items():
             body.set_visibility(key == value)
+
+    def _build_about_settings(self) -> None:
+        with ui.column().classes("aml-card flat w-full p-4 gap-3"):
+            ui.label("信息").classes("text-[14px] font-semibold")
+            rows = [
+                ("public", "官网", "www.AMLauncher.run", "https://www.amlauncher.run"),
+                ("person", "开发者", "239LAN_", ""),
+                (
+                    "code",
+                    "GitHub",
+                    "239LAN/AMinecraftLauncher",
+                    "https://github.com/239LAN/AMinecraftLauncher",
+                ),
+            ]
+            for icon, label, text, url in rows:
+                with ui.row().classes("w-full items-center gap-2 no-wrap"):
+                    ui.icon(icon).classes("text-[18px] text-[#6b7280]")
+                    ui.label(label).classes("w-16 text-[13px] text-[#6b7280]")
+                    if url:
+                        ui.link(text, url, new_tab=True).classes("text-[13px]")
+                    else:
+                        ui.label(text).classes("text-[13px]")
+
+        with ui.column().classes("aml-card flat w-full p-4 gap-2"):
+            ui.label("版本").classes("text-[14px] font-semibold")
+            ui.label(f"{APP_NAME} v{APP_VERSION}").classes("aml-sub")
+            ui.label("所有数据保存在运行目录下的 data 文件夹。").classes("aml-sub")
+
     def _build_launcher_settings(self, view: dict) -> None:
         with ui.column().classes("aml-card flat w-full p-4 gap-2"):
             ui.label("数据与下载").classes("text-[14px] font-semibold")
@@ -4033,7 +4068,7 @@ class LauncherUI:
                 with ui.column().classes("gap-0"):
                     ui.label("启动器更新").classes("text-[14px] font-semibold")
                     ui.label(
-                        f"当前 v{APP_VERSION} · 下载优先走公共 GH 代理"
+                        f"当前 v{APP_VERSION} · 官网源优先，GH 代理与 GitHub 兜底"
                     ).classes("aml-sub")
                 ui.button(
                     "检查更新", icon="system_update_alt",
@@ -4251,7 +4286,7 @@ class LauncherUI:
                     "white-space: pre-wrap; max-height: 220px; overflow-y: auto; "
                     "background: var(--aml-surface-2); border-radius: 10px; padding: 8px 10px;"
                 )
-            ui.label("下载优先使用公共 GH 代理，失败时自动回退 GitHub 原始地址。").classes(
+            ui.label("下载优先使用官网源，其次公共 GH 代理，最后回退 GitHub 原始地址。").classes(
                 "aml-sub"
             )
 

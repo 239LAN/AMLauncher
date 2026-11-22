@@ -1,7 +1,7 @@
 """构建单文件便携版。
 
-Windows 输出 ``dist/<版本号>/A Minecraft Launcher.exe``（桌面窗口）；
-Linux 输出 ``dist/<版本号>/A Minecraft Launcher``（浏览器模式，单文件 ELF）。
+Windows 输出 ``dist/<版本号>/AMLauncher.exe``（桌面窗口）；
+Linux 输出 ``dist/<版本号>/AMLauncher``（原生窗口，单文件 ELF）。
 
 用法：
     python build.py                      # 按当前系统选择打包配置
@@ -20,14 +20,14 @@ from engine.version import APP_VERSION
 
 ROOT = Path(__file__).resolve().parent
 
-APP_NAME = "A Minecraft Launcher"
+APP_NAME = "AMLauncher"
 
 
 def default_target() -> tuple[str, str]:
     """返回 (spec 文件, 产物文件名)。"""
     if sys.platform.startswith("linux"):
-        return "aminecraftlauncher-linux.spec", APP_NAME
-    return "aminecraftlauncher.spec", f"{APP_NAME}.exe"
+        return "amlauncher-linux.spec", APP_NAME
+    return "amlauncher.spec", f"{APP_NAME}.exe"
 
 
 def main(argv: list[str] | None = None) -> int:

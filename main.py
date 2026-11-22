@@ -49,7 +49,7 @@ def _ensure_posix_lock() -> bool:
     try:
         import fcntl
 
-        lock_path = Path(tempfile.gettempdir()) / "aminecraftlauncher.lock"
+        lock_path = Path(tempfile.gettempdir()) / "amlauncher.lock"
         handle = lock_path.open("w")
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -74,7 +74,7 @@ def _ensure_single_instance() -> bool:
 
         kernel32 = ctypes.windll.kernel32
         kernel32.CreateMutexW.restype = wintypes.HANDLE
-        handle = kernel32.CreateMutexW(None, False, "AMinecraftLauncher.SingleInstance")
+        handle = kernel32.CreateMutexW(None, False, "AMLauncher.SingleInstance")
         if not handle:
             return True
         if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
