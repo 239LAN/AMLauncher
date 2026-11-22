@@ -385,12 +385,12 @@ class UpdaterAssetTest(unittest.TestCase):
     def _assets() -> list[dict]:
         return [
             {
-                "name": "AMinecraftLauncher-1.6.5.exe",
+                "name": "AMLauncher-1.6.5.exe",
                 "browser_download_url": "https://example.com/win.exe",
                 "size": 100,
             },
             {
-                "name": "AMinecraftLauncher-1.6.5-linux-x86_64",
+                "name": "AMLauncher-1.6.5-linux-x86_64",
                 "browser_download_url": "https://example.com/linux",
                 "size": 200,
             },
@@ -399,23 +399,23 @@ class UpdaterAssetTest(unittest.TestCase):
     def test_windows_picks_exe(self) -> None:
         with mock.patch.object(updater.sys, "platform", "win32"):
             asset = updater._pick_asset(self._assets())
-        self.assertEqual(asset["name"], "AMinecraftLauncher-1.6.5.exe")
+        self.assertEqual(asset["name"], "AMLauncher-1.6.5.exe")
 
     def test_linux_picks_linux_binary(self) -> None:
         with mock.patch.object(updater.sys, "platform", "linux"):
             asset = updater._pick_asset(self._assets())
-        self.assertEqual(asset["name"], "AMinecraftLauncher-1.6.5-linux-x86_64")
+        self.assertEqual(asset["name"], "AMLauncher-1.6.5-linux-x86_64")
 
 
 class UpdaterSourceTest(unittest.TestCase):
     """更新下载顺序：官网源 → GH 代理 → GitHub 原始地址。"""
 
     def test_official_first(self) -> None:
-        url = "https://github.com/239LAN/AMinecraftLauncher/releases/download/v1.6.5/AMinecraftLauncher-1.6.5.exe"
+        url = "https://github.com/239LAN/AMinecraftLauncher/releases/download/v1.6.5/AMLauncher-1.6.5.exe"
         self.assertEqual(
-            updater.download_urls(url, "AMinecraftLauncher-1.6.5.exe"),
+            updater.download_urls(url, "AMLauncher-1.6.5.exe"),
             [
-                "https://amlget.cdn.cxmc.net/AMinecraftLauncher-1.6.5.exe",
+                "https://amlget.cdn.cxmc.net/AMLauncher-1.6.5.exe",
                 "https://v6.gh-proxy.org/" + url,
                 url,
             ],

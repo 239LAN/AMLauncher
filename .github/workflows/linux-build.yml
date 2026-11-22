@@ -51,7 +51,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AMinecraftLauncher-linux-x86_64
+          name: AMLauncher-linux-x86_64
           path: dist/*/AMLauncher
 
       - name: Attach to release
@@ -60,7 +60,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION=$(python -c "from engine.version import APP_VERSION; print(APP_VERSION)")
-          cp "dist/${VERSION}/AMLauncher" "AMinecraftLauncher-${VERSION}-linux-x86_64"
+          cp "dist/${VERSION}/AMLauncher" "AMLauncher-${VERSION}-linux-x86_64"
           gh release upload "${{ inputs.tag }}" \
-            "AMinecraftLauncher-${VERSION}-linux-x86_64" \
+            "AMLauncher-${VERSION}-linux-x86_64" \
             --clobber

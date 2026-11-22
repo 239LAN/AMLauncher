@@ -4007,7 +4007,6 @@ class LauncherUI:
         with ui.column().classes("aml-card flat w-full p-4 gap-2"):
             ui.label("版本").classes("text-[14px] font-semibold")
             ui.label(f"{APP_NAME} v{APP_VERSION}").classes("aml-sub")
-            ui.label("所有数据保存在运行目录下的 data 文件夹。").classes("aml-sub")
 
     def _build_launcher_settings(self, view: dict) -> None:
         with ui.column().classes("aml-card flat w-full p-4 gap-2"):
