@@ -3268,9 +3268,9 @@ class LauncherUI:
             if not results:
                 ui.label("没有找到匹配的结果").classes("aml-sub p-2")
             for index, item in enumerate(results):
-                self._content_row(item, index, kind, game_version, loader)
+                self._download_row(item, index, kind, game_version, loader)
 
-    def _content_row(self, item: dict, index: int, kind: str, game_version: Optional[str], loader: Optional[str]) -> None:
+    def _download_row(self, item: dict, index: int, kind: str, game_version: Optional[str], loader: Optional[str]) -> None:
         with ui.row().classes(
             "aml-card aml-fade w-full items-start gap-3 p-3 no-wrap"
         ).style(f"animation-delay: {min(index * 10, 200)}ms"):

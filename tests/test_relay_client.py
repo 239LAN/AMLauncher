@@ -77,6 +77,14 @@ class LanPortTest(unittest.TestCase):
         )
         self.assertEqual(relay.detect_lan_port(log), 51234)
 
+    def test_latest_line_wins_across_patterns(self) -> None:
+        # 新旧文案同时出现时，应取日志里最靠后的一条，而不是正则顺序靠后的。
+        log = self.write_log(
+            "[23:30:04] [Render thread/INFO]: Published LAN server on port 51234\n"
+            "[23:35:00] [Server thread/INFO]: Local game hosted on port 51888\n"
+        )
+        self.assertEqual(relay.detect_lan_port(log), 51888)
+
     def test_visitor_port_is_free(self) -> None:
         port = relay.pick_free_port()
         self.assertGreaterEqual(port, relay.DEFAULT_BIND_RANGE[0])
@@ -121,6 +129,10 @@ class AnsiLogTest(unittest.TestCase):
     def test_strip_ansi(self) -> None:
         raw = "\x1b[1;34m2026-11-21 [I] login success\x1b[0m"
         self.assertEqual(relay.strip_ansi(raw), "2026-11-21 [I] login success")
+
+    def test_strip_cursor_controls(self) -> None:
+        raw = "\x1b[2K\x1b[?25l2026-11-21 [I] ok\x1b[?25h"
+        self.assertEqual(relay.strip_ansi(raw), "2026-11-21 [I] ok")
 
 
 if __name__ == "__main__":

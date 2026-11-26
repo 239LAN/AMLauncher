@@ -275,7 +275,8 @@ def frpc_config_text(frpc: dict, *, kind: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+# 不只匹配颜色（m），也覆盖清行、隐藏光标等 CSI 控制序列。
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 
 def strip_ansi(text: str) -> str:
@@ -324,10 +325,15 @@ def detect_lan_port(log_path: Optional[Path], *, default: int = 25565) -> int:
         # 26.x 起的新日志文案
         r"Published LAN server on port (\d+)",
     ]
+    best_end = -1
     port = 0
     for pattern in patterns:
         for match in re.finditer(pattern, text):
-            port = int(match.group(1))
+            # 取日志中最靠后的一条记录：不同版本文案可能同时出现，
+            # 按出现位置而不是正则顺序决定最终端口。
+            if match.end() > best_end:
+                best_end = match.end()
+                port = int(match.group(1))
     return port or default
 
 

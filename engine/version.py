@@ -1,7 +1,7 @@
 """应用名称与版本号（引擎层与界面层共用，避免多处硬编码）。"""
 
 APP_NAME = "AMLauncher"
-APP_VERSION = "1.6.5"
+APP_VERSION = "1.6.6"
 
 
 def user_agent() -> str:
