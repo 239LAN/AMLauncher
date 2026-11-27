@@ -115,7 +115,9 @@ class LauncherService:
         self._accounts = AccountStore(self.store.data_dir / "accounts.json", secrets)
         # 启动时应用配置里的下载源；探测放后台，网络不通时也不会拖慢启动。
         mirror_module.manager.set_source(self.config.download_source)
+        mirror_module.manager.set_amlapi(bool(self.config.amlapi))
         mirror_module.manager.install()
+        mirror_module.manager.set_logger(self.log)
         threading.Thread(target=mirror_module.manager.probe, daemon=True).start()
 
         # 哈希文件库：mcfile 存内容，.work 是运行期间的工作目录。
@@ -568,6 +570,14 @@ class LauncherService:
             if status.available
             else f"镜像不可用，已回退官方源（{status.active}）"
         )
+        if status.amlapi_enabled:
+            info = status.amlapi or {}
+            if info.get("verified"):
+                self.log(f"AMLAPI 已验证，下载不限速（剩余 {info.get('expires_in')} 秒）")
+            elif status.amlapi_available is False:
+                self.log("AMLAPI 不可达，本次仅使用其它下载源")
+            else:
+                self.log("AMLAPI 未验证：先按普通请求下载，后台验证通过后自动切换高速")
         return status.as_dict()
 
     # ------------------------------------------------------------------ 版本
@@ -2632,6 +2642,11 @@ class LauncherService:
         if "download_source" in changes and changes["download_source"]:
             self.config.download_source = str(changes["download_source"])
             mirror_module.install(self.config.download_source)
+
+        if "amlapi" in changes:
+            self.config.amlapi = bool(changes["amlapi"])
+            mirror_module.manager.set_amlapi(self.config.amlapi)
+            self.log("AMLAPI 镜像已开启，后台验证中" if self.config.amlapi else "AMLAPI 镜像已关闭")
 
         self.store.save(self.config)
         return self.config_view()

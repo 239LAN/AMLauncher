@@ -39,6 +39,9 @@ opener: urllib.request.OpenerDirector = urllib.request.build_opener(
 _url_candidates: Callable[[str], list[str]] = lambda url: [url]
 # 镜像与官方源都可用时，下载器会同时从两个源下载不同分片。
 _dual_source_policy: Callable[[], bool] = lambda: False
+# 下载源代次：某个源（AMLAPI 验证通过）发生变化时，正在进行的连接需要重开，
+# 以便未下载完的部分立刻走新的速率 / 线路。非该源的地址恒为 0。
+_source_epoch: Callable[[str], int] = lambda url: 0
 
 _NET_ERRORS = (
     urllib.error.URLError,
@@ -65,6 +68,10 @@ class _PartRestarted(Exception):
     """分片文件已作废，需要从区间起点重新下载。"""
 
 
+class _SourceSwitched(Exception):
+    """下载源状态变化（AMLAPI 验证通过），需要重开连接续传剩余部分。"""
+
+
 def set_url_candidates(fn: Callable[[str], list[str]]) -> None:
     """安装 URL 候选生成器（供下载源镜像使用）。"""
     global _url_candidates
@@ -75,6 +82,19 @@ def set_dual_source_policy(fn: Callable[[], bool]) -> None:
     """安装「是否允许镜像与官方源并行下载」的判定函数。"""
     global _dual_source_policy
     _dual_source_policy = fn
+
+
+def set_source_epoch(fn: Callable[[str], int]) -> None:
+    """安装「下载源代次」查询函数（供下载源镜像使用）。"""
+    global _source_epoch
+    _source_epoch = fn
+
+
+def source_epoch(url: str) -> int:
+    try:
+        return int(_source_epoch(url))
+    except Exception:  # noqa: BLE001 - 判定函数异常时视为不需要重开
+        return 0
 
 
 def dual_source_enabled() -> bool:
@@ -240,15 +260,25 @@ def download_file(
         for index, candidate in enumerate(candidate_list):
             # 镜像候选先给较短超时，失败立即回退官方源。
             attempt_timeout = timeout if index == len(candidate_list) - 1 else min(timeout, 12)
-            try:
-                return _download_once(
-                    candidate, dest, part, expected_size, track, resume, attempt_timeout,
-                    headers, cancel, reported,
-                )
-            except DownloadCancelled:
-                raise
-            except _NET_ERRORS as exc:
-                last_error = exc
+            switched = 0
+            while True:
+                try:
+                    return _download_once(
+                        candidate, dest, part, expected_size, track, resume, attempt_timeout,
+                        headers, cancel, reported,
+                    )
+                except DownloadCancelled:
+                    raise
+                except _SourceSwitched:
+                    # 源已切换（AMLAPI 验证完成）：保留 .part，立即重开连接续传。
+                    switched += 1
+                    if switched <= 3:
+                        continue
+                    last_error = OSError("下载源切换过于频繁")
+                    break
+                except _NET_ERRORS as exc:
+                    last_error = exc
+                    break
         if attempt < retries:
             # 退避期间也响应取消，避免点「取消」后还要等好几秒。
             deadline = time.monotonic() + min(2**attempt, 10)
@@ -294,6 +324,7 @@ def _download_once(
     if start > 0:
         request_headers["Range"] = f"bytes={start}-"
 
+    epoch = source_epoch(url)
     try:
         response = _open(url, headers=request_headers, timeout=timeout)
     except urllib.error.HTTPError as exc:
@@ -325,6 +356,8 @@ def _download_once(
             while True:
                 if cancel and cancel():
                     raise DownloadCancelled()
+                if source_epoch(url) != epoch:
+                    raise _SourceSwitched()
                 chunk = response.read(CHUNK_SIZE)
                 if not chunk:
                     break
@@ -418,26 +451,37 @@ def download_part(
                 raise DownloadAborted()
             # 首个候选给较短超时，镜像/官方之一不可用时快速换源。
             attempt_timeout = timeout if index == len(candidate_list) - 1 else min(timeout, 10)
-            try:
-                _download_part_once(
-                    candidate, dest, start, end, emit, attempt_timeout, headers, cancel, abort
-                )
-                return written_total
-            except DownloadCancelled:
-                raise
-            except DownloadAborted:
-                raise
-            except RangeNotSupported as exc:
-                # 该源忽略 Range：换下一个源试试，两个源都不支持才整文件回退。
-                range_error = exc
-                continue
-            except _PartRestarted:
-                reset_progress()
-                range_only = False
-                continue
-            except _NET_ERRORS as exc:
-                range_only = False
-                last_error = exc
+            switched = 0
+            while True:
+                try:
+                    _download_part_once(
+                        candidate, dest, start, end, emit, attempt_timeout, headers, cancel, abort
+                    )
+                    return written_total
+                except DownloadCancelled:
+                    raise
+                except DownloadAborted:
+                    raise
+                except _SourceSwitched:
+                    # 源已切换（AMLAPI 验证完成）：保留分片，立即重开连接续传剩余区间。
+                    switched += 1
+                    if switched <= 3:
+                        continue
+                    range_only = False
+                    last_error = OSError("下载源切换过于频繁")
+                    break
+                except RangeNotSupported as exc:
+                    # 该源忽略 Range：换下一个源试试，两个源都不支持才整文件回退。
+                    range_error = exc
+                    break
+                except _PartRestarted:
+                    reset_progress()
+                    range_only = False
+                    continue
+                except _NET_ERRORS as exc:
+                    range_only = False
+                    last_error = exc
+                    break
         if range_only and range_error is not None:
             raise range_error
         if attempt < retries:
@@ -482,6 +526,7 @@ def _download_part_once(
     request_headers = dict(headers or {})
     request_headers["Range"] = f"bytes={offset}-{end}"
 
+    epoch = source_epoch(url)
     try:
         response = _open(url, headers=request_headers, timeout=timeout)
     except urllib.error.HTTPError as exc:
@@ -516,6 +561,8 @@ def _download_part_once(
                     raise DownloadCancelled()
                 if abort and abort.is_set():
                     raise DownloadAborted()
+                if source_epoch(url) != epoch:
+                    raise _SourceSwitched()
                 block = response.read(min(CHUNK_SIZE, remaining))
                 if not block:
                     break

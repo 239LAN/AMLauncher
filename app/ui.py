@@ -4021,6 +4021,13 @@ class LauncherUI:
                 )
             ui.label("游戏文件（版本 / libraries / assets / mods）统一放在该目录，修改后立即生效").classes("aml-sub")
             with ui.row().classes("w-full items-center gap-3 no-wrap"):
+                self.set_amlapi = ui.switch(
+                    "AMLAPI 镜像加速（仅原版游戏资源，后台验证通过后不限速）",
+                    value=bool(view.get("amlapi")),
+                ).props("dense")
+                ui.space()
+                self.amlapi_hint = ui.label(self._amlapi_text(view["mirror"])).classes("aml-sub")
+            with ui.row().classes("w-full items-center gap-3 no-wrap"):
                 self.set_mirror = ui.switch(
                     "BMCLAPI 镜像加速（镜像与官方可用时双源并行，失败自动回退）",
                     value=view["download_source"] != "official",
@@ -4144,6 +4151,7 @@ class LauncherUI:
     async def _save_launcher_settings(self) -> None:
         changes = {
             "download_source": "auto" if self.set_mirror.value else "official",
+            "amlapi": bool(self.set_amlapi.value),
             "download_workers": int(self.set_workers.value or 256),
             "mod_source": self.set_mod_source.value,
             "mod_loader": self.set_mod_loader.value,
@@ -4158,6 +4166,7 @@ class LauncherUI:
         self.mirror_hint.text = (
             f"当前下载源：{view['mirror'].get('active') or view['mirror'].get('source')}"
         )
+        self.amlapi_hint.text = self._amlapi_text(view["mirror"])
         if hasattr(self, "update_hint"):
             self.update_hint.text = self._update_mode_text()
         # 下载页有同名快照开关，保持同步，避免显示过期状态。
@@ -4462,6 +4471,18 @@ class LauncherUI:
 
         self.open_dialog("运行日志", builder)
 
+    def _amlapi_text(self, mirror: dict) -> str:
+        info = mirror.get("amlapi") or {}
+        if not mirror.get("amlapi_enabled"):
+            return "AMLAPI：未启用"
+        if info.get("verified"):
+            minutes = max(1, int(info.get("expires_in") or 0) // 60)
+            return f"AMLAPI：已验证，不限速（剩余约 {minutes} 分钟）"
+        if mirror.get("amlapi_available") is False:
+            return "AMLAPI：不可达，暂不使用"
+        state = info.get("detail") or "后台验证中"
+        return f"AMLAPI：{state}，当前按普通请求限速下载"
+
     def _storage_text(self, storage: dict) -> str:
         if not storage.get("enabled"):
             return "当前：普通目录（游戏文件直接保存在 .minecraft）"
@@ -4612,6 +4633,8 @@ class LauncherUI:
             f"当前下载源：{status.get('active')}"
             + (f"（{status.get('latency_ms')} ms）" if status.get("available") else "（镜像不可用）")
         )
+        if hasattr(self, "amlapi_hint"):
+            self.amlapi_hint.text = self._amlapi_text(status)
         ui.notify(
             f"当前下载源：{status.get('active')}（{status.get('latency_ms')} ms）"
             if status.get("available") else f"镜像不可用，已回退：{status.get('active')}",

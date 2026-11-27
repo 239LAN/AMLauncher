@@ -58,6 +58,8 @@ class LauncherConfig:
     mod_loader: str = "fabric"
     # 下载源：auto（镜像优先，失败回退官方）/ bmclapi / official
     download_source: str = "auto"
+    # AMLAPI 原版资源镜像（独立开关，可与 BMCLAPI / 官方源并发下载）
+    amlapi: bool = False
     # 全局默认是否开启版本隔离（每个版本可单独覆盖）
     isolated: bool = False
     # 哈希文件库（实验性）：游戏文件按 SHA1 去重存放，启动时物化到临时目录。
